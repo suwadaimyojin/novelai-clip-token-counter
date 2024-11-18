@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CLIP Token Counter</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        background-color: #f5f5f5;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        background-color: white;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+
+      h1 {
+        text-align: center;
+        color: #2c3e50;
+        margin-bottom: 1.5rem;
+      }
+
+      .input-section {
+        margin-bottom: 2rem;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 200px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        font-size: 16px;
+        transition: border-color 0.3s ease;
+        resize: vertical;
+      }
+
+      textarea:focus {
+        outline: none;
+        border-color: #3498db;
+      }
+
+      .result-section {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin-top: 2rem;
+      }
+
+      .result-title {
+        font-size: 1.2rem;
+        color: #2c3e50;
+        margin-bottom: 0.5rem;
+      }
+
+      .token-count {
+        font-size: 2rem;
+        color: #3498db;
+        text-align: center;
+        font-weight: bold;
+      }
+
+      .loading {
+        text-align: center;
+        color: #666;
+        font-style: italic;
+      }
+
+      .error {
+        color: #e74c3c;
+        text-align: center;
+        margin-top: 1rem;
+      }
+
+      @keyframes pulse {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+
+      .loading-indicator {
+        animation: pulse 1.5s infinite;
+      }
+    </style>
+    <script>
+      var __spreadArray =
+        (this && this.__spreadArray) ||
+        function (to, from, pack) {
+          if (pack || arguments.length === 2)
+            for (var i = 0, l = from.length, ar; i < l; i++) {
+              if (ar || !(i in from)) {
+                if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+                ar[i] = from[i];
+              }
+            }
+          return to.concat(ar || Array.prototype.slice.call(from));
+        };
+      var ClipEncoder;
+      var textEncoder = new TextEncoder();
+      var encodeStr = function (str) {
+        return [...textEncoder.encode(str)];
+      };
+      var textDecoder = new TextDecoder("utf8");
+      var decodeStr = function (arr) {
+        return textDecoder.decode(new Uint8Array(arr));
+      };
+      var dictZip = function (x, y) {
+        var result = {};
+        x.map(function (_, i) {
+          result[x[i]] = y[i];
+        });
+        return result;
+      };
+      var range = function (x, y) {
+        const res = [...Array.from({ length: y }).keys()].slice(x);
+        return res;
+      };
+      var ord = function (x) {
+        // eslint-disable-next-line unicorn/prefer-code-point
+        return x.charCodeAt(0);
+      };
+      var chr = function (x) {
+        // eslint-disable-next-line unicorn/prefer-code-point
+        return String.fromCharCode(x);
+      };
+      function get_pairs(word) {
+        var pairs = new Set();
+        var prev_char = word[0];
+        for (var i = 1; i < word.length; i++) {
+          var char = word[i];
+          pairs.add([prev_char, char]);
+          prev_char = char;
+        }
+        return pairs;
+      }
+      var bytes_to_unicode = function () {
+        const bs = [
+          ...range(33, 127), // ASCII '!' (33) 到 '~' (126)
+          ...range(161, 173), // ASCII '¡' (161) 到 '¬' (172)
+          ...range(174, 256), // ASCII '®' (174) 到 'ÿ' (255)
+        ];
+
+        const cs = [...bs];
+        let n = 0;
+        for (let b = 0; b < 2 ** 8; b++) {
+          if (!bs.includes(b)) {
+            bs.push(b);
+            cs.push(2 ** 8 + n);
+            n = n + 1;
+          }
+        }
+
+        const csm = cs.map((x) => String.fromCharCode(x));
+
+        const result = {};
+        bs.map((_, i) => {
+          result[bs[i]] = csm[i];
+        });
+        return result;
+      };
+      function basic_clean(text, htmlEntities) {
+        text = htmlEntities.decode(htmlEntities.decode(text));
+        return text.trim();
+      }
+      function whitespace_clean(text) {
+        return text.replace(/\s+/g, " ").trim();
+      }
+      function bracket_clean(text) {
+        return text.replace(/[[\]{}]/g, " ").trim();
+      }
+      var clip_pattern =
+        /<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+/giu;
+      var byte_encoder = bytes_to_unicode();
+      var byte_decoder = {};
+      Object.keys(byte_encoder).map(function (x) {
+        byte_decoder[byte_encoder[Number.parseInt(x)]] = Number.parseInt(x);
+      });
+      ClipEncoder = /** @class */ (function () {
+        function ClipEncoder(bpeArr, htmlEntities) {
+          var _this = this;
+          this.decode = function (tokens) {
+            var text = tokens
+              .map(function (x) {
+                return _this.decoder[x];
+              })
+              .join("");
+            var arr = __spreadArray([], text, true).flatMap(function (x) {
+              var _a;
+              var converted =
+                (_a = byte_decoder[x]) !== null && _a !== void 0
+                  ? _a
+                  : encodeStr(x);
+              return converted;
+            });
+            return decodeStr(arr).replace(/<\/w>/g, " ");
+          };
+          this.tokensContaining = function (str) {
+            var keys = Object.keys(_this.encoder);
+            var arr = [];
+            for (var _i = 0, keys_1 = keys; _i < keys_1.length; _i++) {
+              var key = keys_1[_i];
+              if (key.includes(str))
+                arr.push({ token: key, id: _this.encoder[key] });
+            }
+            return arr;
+          };
+          this.htmlEntities = htmlEntities;
+          var merges = bpeArr
+            .slice(1, 49152 - 256 - 2 + 1)
+            .map(function (merge) {
+              return merge.split(" ");
+            });
+          // eslint-disable-next-line max-len, prettier/prettier
+          var vocab = [
+            "!",
+            '"',
+            "#",
+            "$",
+            "%",
+            "&",
+            "'",
+            "(",
+            ")",
+            "*",
+            "+",
+            ",",
+            "-",
+            ".",
+            "/",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            ":",
+            ";",
+            "<",
+            "=",
+            ">",
+            "?",
+            "@",
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "I",
+            "J",
+            "K",
+            "L",
+            "M",
+            "N",
+            "O",
+            "P",
+            "Q",
+            "R",
+            "S",
+            "T",
+            "U",
+            "V",
+            "W",
+            "X",
+            "Y",
+            "Z",
+            "[",
+            "\\",
+            "]",
+            "^",
+            "_",
+            "`",
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "f",
+            "g",
+            "h",
+            "i",
+            "j",
+            "k",
+            "l",
+            "m",
+            "n",
+            "o",
+            "p",
+            "q",
+            "r",
+            "s",
+            "t",
+            "u",
+            "v",
+            "w",
+            "x",
+            "y",
+            "z",
+            "{",
+            "|",
+            "}",
+            "~",
+            "¡",
+            "¢",
+            "£",
+            "¤",
+            "¥",
+            "¦",
+            "§",
+            "¨",
+            "©",
+            "ª",
+            "«",
+            "¬",
+            "®",
+            "¯",
+            "°",
+            "±",
+            "²",
+            "³",
+            "´",
+            "µ",
+            "¶",
+            "·",
+            "¸",
+            "¹",
+            "º",
+            "»",
+            "¼",
+            "½",
+            "¾",
+            "¿",
+            "À",
+            "Á",
+            "Â",
+            "Ã",
+            "Ä",
+            "Å",
+            "Æ",
+            "Ç",
+            "È",
+            "É",
+            "Ê",
+            "Ë",
+            "Ì",
+            "Í",
+            "Î",
+            "Ï",
+            "Ð",
+            "Ñ",
+            "Ò",
+            "Ó",
+            "Ô",
+            "Õ",
+            "Ö",
+            "×",
+            "Ø",
+            "Ù",
+            "Ú",
+            "Û",
+            "Ü",
+            "Ý",
+            "Þ",
+            "ß",
+            "à",
+            "á",
+            "â",
+            "ã",
+            "ä",
+            "å",
+            "æ",
+            "ç",
+            "è",
+            "é",
+            "ê",
+            "ë",
+            "ì",
+            "í",
+            "î",
+            "ï",
+            "ð",
+            "ñ",
+            "ò",
+            "ó",
+            "ô",
+            "õ",
+            "ö",
+            "÷",
+            "ø",
+            "ù",
+            "ú",
+            "û",
+            "ü",
+            "ý",
+            "þ",
+            "ÿ",
+            "Ā",
+            "ā",
+            "Ă",
+            "ă",
+            "Ą",
+            "ą",
+            "Ć",
+            "ć",
+            "Ĉ",
+            "ĉ",
+            "Ċ",
+            "ċ",
+            "Č",
+            "č",
+            "Ď",
+            "ď",
+            "Đ",
+            "đ",
+            "Ē",
+            "ē",
+            "Ĕ",
+            "ĕ",
+            "Ė",
+            "ė",
+            "Ę",
+            "ę",
+            "Ě",
+            "ě",
+            "Ĝ",
+            "ĝ",
+            "Ğ",
+            "ğ",
+            "Ġ",
+            "ġ",
+            "Ģ",
+            "ģ",
+            "Ĥ",
+            "ĥ",
+            "Ħ",
+            "ħ",
+            "Ĩ",
+            "ĩ",
+            "Ī",
+            "ī",
+            "Ĭ",
+            "ĭ",
+            "Į",
+            "į",
+            "İ",
+            "ı",
+            "Ĳ",
+            "ĳ",
+            "Ĵ",
+            "ĵ",
+            "Ķ",
+            "ķ",
+            "ĸ",
+            "Ĺ",
+            "ĺ",
+            "Ļ",
+            "ļ",
+            "Ľ",
+            "ľ",
+            "Ŀ",
+            "ŀ",
+            "Ł",
+            "ł",
+            "Ń",
+          ];
+          vocab = __spreadArray(
+            __spreadArray([], vocab, true),
+            vocab.map(function (v) {
+              return v + "</w>";
+            }),
+            true
+          );
+          for (var _i = 0, merges_1 = merges; _i < merges_1.length; _i++) {
+            var merge = merges_1[_i];
+            vocab.push(merge.join(""));
+          }
+          vocab.push("<|startoftext|>", "<|endoftext|>");
+          this.encoder = Object.fromEntries(
+            vocab.map(function (v, i) {
+              return [v, i];
+            })
+          );
+          this.decoder = Object.fromEntries(
+            Object.entries(this.encoder).map(function (_a) {
+              var k = _a[0],
+                v = _a[1];
+              return [v, k];
+            })
+          );
+          this.bpeRanks = Object.fromEntries(
+            merges.map(function (v, i) {
+              return [v.join("·😎·"), i];
+            })
+          ); // ·😎· because js doesn't yet have tuples
+          this.cache = {
+            "<|startoftext|>": "<|startoftext|>",
+            "<|endoftext|>": "<|endoftext|>",
+          };
+        }
+        ClipEncoder.prototype.bpe = function (token) {
+          if (this.cache[token] !== undefined) {
+            return this.cache[token];
+          }
+
+          let word = [...token.slice(0, -1), token.slice(-1) + "</w>"];
+          let pairs = get_pairs(word);
+
+          if (pairs.size === 0) {
+            return token + "</w>";
+          }
+
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            let bigram = null;
+            let minRank = Number.POSITIVE_INFINITY;
+            for (const p of pairs) {
+              const r = this.bpeRanks[p.join("·😎·")];
+              if (r === undefined) continue;
+              if (r < minRank) {
+                minRank = r;
+                bigram = p;
+              }
+            }
+
+            if (bigram === null) {
+              break;
+            }
+
+            const [first, second] = bigram;
+            const newWord = [];
+            let i = 0;
+            while (i < word.length) {
+              const j = word.indexOf(first, i);
+
+              if (j === -1) {
+                newWord.push(...word.slice(i));
+                break;
+              }
+
+              newWord.push(...word.slice(i, j));
+              i = j;
+
+              if (
+                word[i] === first &&
+                i < word.length - 1 &&
+                word[i + 1] === second
+              ) {
+                newWord.push(first + second);
+                i += 2;
+              } else {
+                newWord.push(word[i]);
+                i += 1;
+              }
+            }
+            word = newWord;
+            if (word.length === 1) {
+              break;
+            } else {
+              pairs = get_pairs(word);
+            }
+          }
+          const joined = word.join(" ");
+          this.cache[token] = joined;
+          return joined;
+        };
+        ClipEncoder.prototype.encode = function (text) {
+          const bpeTokens = [];
+          text = whitespace_clean(
+            basic_clean(bracket_clean(text), this.htmlEntities)
+          ).toLowerCase();
+          for (let token of [...text.matchAll(clip_pattern)].map((m) => m[0])) {
+            token = encodeStr(token)
+              .map((b) => {
+                return byte_encoder[b];
+              })
+              .join("");
+            bpeTokens.push(
+              ...this.bpe(token)
+                .split(" ")
+                .map((bpe_token) => this.encoder[bpe_token])
+            );
+          }
+          return bpeTokens;
+        };
+        ClipEncoder.prototype.makeUnitrim = function () {
+          var unicodeReq = [];
+          for (var i = 0; i < Object.keys(this.encoder).length; i++) {
+            var v = this.decoder[i];
+            var need = 0;
+            var min_need = 0;
+            // Turn the string into bytes.
+            var bytes = [];
+            bytes = encodeStr(v);
+            for (var _i = 0, bytes_1 = bytes; _i < bytes_1.length; _i++) {
+              var c = bytes_1[_i];
+              if ((c & 128) === 0) {
+                need = 0;
+              } else if ((c & 192) === 128) {
+                need -= 1;
+              } else if ((c & 224) === 192) {
+                need = 1;
+              } else if ((c & 240) === 224) {
+                need = 2;
+              } else if ((c & 248) === 240) {
+                need = 3;
+              }
+              if (need < min_need) {
+                min_need = need;
+              }
+            }
+            if (need === 0) {
+              need = min_need;
+            }
+            unicodeReq.push(need);
+          }
+          return unicodeReq;
+        };
+        ClipEncoder.prototype.totalTokens = function () {
+          return Object.keys(this.encoder).length;
+        };
+        return ClipEncoder;
+      })();
+      window.ClipEncoder = ClipEncoder;
+    </script>
+    <script src="./html5-entities.js"></script>
+    <script type="module">
+      import { decompressSync } from "https://cdn.skypack.dev/fflate";
+      async function loadFileByFetch() {
+        try {
+          const response = await fetch("./clip_tokenizer.def");
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const buffer = await response.arrayBuffer();
+          const data = decompressSync(new Uint8Array(buffer));
+
+          const textDecoder = new TextDecoder("utf8");
+          const tokenizer = JSON.parse(textDecoder.decode(data));
+
+          const htmlEntities = Html5Entities;
+          return new window.ClipEncoder(
+            tokenizer.text.split("\n"),
+            htmlEntities
+          );
+
+          console.log("Data loaded successfully:", data);
+        } catch (error) {
+          console.error("Error loading file:", error);
+        }
+      }
+
+      window.clip = await loadFileByFetch();
+
+      async function initializeCalculation() {
+        const inputText = document.getElementById("inputText");
+        if (inputText && inputText.value) {
+         let encodeRes = await window.clip.encode(inputText.value);
+          console.log("encoderes", encodeRes.length);
+          showResult(encodeRes.length);
+        }
+      }
+
+      initializeCalculation();
+    </script>
+    <script>
+      function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+          const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+          };
+          clearTimeout(timeout);
+          timeout = setTimeout(later, wait);
+        };
+      }
+
+      function showLoading() {
+        document.getElementById("loading").style.display = "block";
+        document.getElementById("result").style.display = "none";
+        document.getElementById("error").style.display = "none";
+      }
+
+      function showResult(count) {
+        document.getElementById("loading").style.display = "none";
+        document.getElementById("result").style.display = "block";
+        document.getElementById("result").textContent = count;
+      }
+
+      function showError(message) {
+        document.getElementById("loading").style.display = "none";
+        document.getElementById("error").style.display = "block";
+        document.getElementById("error").textContent = message;
+      }
+
+      async function calculateTokens(text) {
+        if (!text.trim()) {
+          showResult(0);
+          return;
+        }
+
+        showLoading();
+        try {
+          let encodeRes;
+          try {
+            encodeRes = await window.clip.encode(text);
+            console.log("encoderes", encodeRes.length);
+            showResult(encodeRes.length);
+          } catch (error) {
+            console.log(error);
+          }
+        } catch (error) {
+          showError("Error calculating tokens: " + error.message);
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="container">
+      <h1>CLIP Token Counter</h1>
+
+      <div class="input-section">
+        <textarea
+          id="inputText"
+          placeholder="Enter your text here..."
+          oninput="debounce(calculateTokens, 500)(this.value)"
+        >
+yukihana lamy,[ningen_mame],[ATDAN],tidsean,[[ke-ta]],ciloranko,kani biimu,[[sho_(sho_lwlw)]],wlop,year_2023,1girl,:d,ahoge,black panties,blush,cellphone,clothes lift,fake phone screenshot,fake screenshot,holding,holding phone,indoors,lifted by self,long hair,navel,open mouth,panties,panty peek,phone,selfie,shirt,shirt lift,smartphone,smile,solo,standing,stomach,t-shirt,underwear,upper body,white shirt , best quality, amazing quality, very aesthetic, absurdres
+      </textarea
+        >
+      </div>
+
+      <div class="result-section">
+        <div class="result-title">Token Count:</div>
+        <div id="result" class="token-count">0</div>
+      </div>
+
+      <div id="loading" class="loading" style="display: none">
+        <span class="loading-indicator">Calculating tokens...</span>
+      </div>
+
+      <div id="error" class="error" style="display: none"></div>
+    </div>
+  </body>
+</html>
