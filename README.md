@@ -13,7 +13,7 @@ A lightweight web tool for calculating the total number of tokens processed by t
 
 This project provides a lightweight web interface for token calculation using the CLIP Tokenizer model. Built with HTML and JavaScript, it runs directly in the browser without requiring a backend server.
 
-【本项目提供了一个轻量级的网页界面，通过CLIP Tokenizer模型计算文本的Tokens数量。使用HTML和JavaScript实现，可直接在浏览器中运行，无需后端服务器】
+【本项目提供了一个轻量级的网页界面，通过CLIP Tokenizer模型计算文本的Tokens数量。使用HTML和JavaScript实现，可直接在浏览器中运行】
 
 ## Features | 功能特点
 
